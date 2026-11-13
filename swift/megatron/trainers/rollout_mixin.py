@@ -41,6 +41,7 @@ from swift.rlhf_trainers.vllm_client import VLLMInferClient
 from swift.rollout import MultiTurnScheduler, invoke_async_hook, multi_turns, run_multi_turn
 from swift.utils import (HfConfigFactory, JsonlWriter, get_current_device, get_logger, is_last_rank, is_vllm_available,
                          remove_response, synchronize, to_device)
+from .model_host_cache import release_restored_model_host_cache
 from .utils import (gather_object, load_megatron_model_to_gpu, load_megatron_optimizer, offload_megatron_model_to_cpu,
                     offload_megatron_optimizer)
 
@@ -481,8 +482,11 @@ class MegatronRolloutMixin(BaseRolloutTrainerMixin):
 
         logprobs_mode = 'processed_logprobs' if self.vllm_version_ge_0_10_2 else None
 
-        vllm_engine_kwargs = args.vllm_engine_kwargs or {}
+        vllm_engine_kwargs = dict(args.vllm_engine_kwargs or {})
         load_format = vllm_engine_kwargs.pop('load_format', 'auto')
+        enable_expert_parallel = vllm_engine_kwargs.pop('enable_expert_parallel', False)
+        if not isinstance(enable_expert_parallel, bool):
+            raise ValueError('enable_expert_parallel must be a boolean')
 
         if self.args.router_replay_mode == 'R3':
             assert check_vllm_version_ge('0.14.0'), \
@@ -511,6 +515,7 @@ class MegatronRolloutMixin(BaseRolloutTrainerMixin):
             model_type=args.model_type,
             use_async_engine=False,
             tensor_parallel_size=self.vllm_tensor_parallel_size,
+            enable_expert_parallel=enable_expert_parallel,
             gpu_memory_utilization=self.vllm_gpu_memory_utilization,
             enable_prefix_caching=args.vllm_enable_prefix_caching,
             max_num_seqs=max_num_seqs,
@@ -1036,7 +1041,9 @@ class MegatronRolloutMixin(BaseRolloutTrainerMixin):
         """Context manager for model/optimizer offloading during vLLM generation."""
         if self.args.offload_model:
             offload_megatron_model_to_cpu(self.wrapped_models)
-            if hasattr(self, 'ref_models') and self.ref_models:
+            if hasattr(self, '_offload_reference_model'):
+                self._offload_reference_model()
+            elif getattr(self, 'ref_models', None):
                 offload_megatron_model_to_cpu(self.ref_models)
         if getattr(self, 'optimizer', None) and self.args.offload_optimizer:
             offload_megatron_optimizer(self.optimizer)
@@ -1046,7 +1053,11 @@ class MegatronRolloutMixin(BaseRolloutTrainerMixin):
         finally:
             if self.args.offload_model:
                 load_megatron_model_to_gpu(self.wrapped_models)
-                if hasattr(self, 'ref_models') and self.ref_models:
+                if getattr(self.args, 'release_model_cpu_cache', False):
+                    release_restored_model_host_cache(self.wrapped_models)
+                if hasattr(self, '_restore_reference_model'):
+                    self._restore_reference_model()
+                elif getattr(self, 'ref_models', None):
                     load_megatron_model_to_gpu(self.ref_models)
             if getattr(self, 'optimizer', None) and self.args.offload_optimizer:
                 load_megatron_optimizer(self.optimizer)

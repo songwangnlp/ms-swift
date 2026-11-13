@@ -369,6 +369,10 @@ Megatron训练参数继承自Megatron参数和基本参数（**与ms-swift共用
 - center_rewards_coefficient: 用于激励奖励模型输出均值为零的奖励的系数，具体查看这篇[论文](https://huggingface.co/papers/2312.09244)。推荐值：0.01。
 
 ### GRPO参数
+
+- reference_model_cache_dir: 冻结参考模型缓存目录，必须是已存在的私有磁盘目录的绝对路径。默认为 `None`（关闭）。要求全参数 GRPO、`use_vllm`、`vllm_mode=colocate` 和 `offload_model`。详见 [rollout 内存控制](Rollout-memory.md)。
+- reference_model_cache_allow_nfs: 显式允许参考缓存使用 NFS，默认为 `False`。启用时必须设置缓存目录；共享存储容量与 I/O 需由使用者确认。
+- release_model_cpu_cache: 模型恢复且设备复制完成后，释放冗余策略模型 CPU 参数缓冲区。默认为 `False`。要求全参数 GRPO 和模型卸载，不改变优化器或 checkpoint 内容。详见 [rollout 内存控制](Rollout-memory.md)。
 - mcore_ref_model: 含义同DPO。
 - mcore_ref_adapter: 含义同DPO。
 - beta: KL正则系数，默认为0.04，设置为0时不加载ref model。

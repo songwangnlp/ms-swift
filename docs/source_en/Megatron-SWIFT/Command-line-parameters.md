@@ -392,6 +392,9 @@ In addition to inheriting the training parameters, the following parameters are 
 
 ### GRPO Parameters
 
+- reference_model_cache_dir: Optional absolute path to an existing, private disk directory for the frozen reference-model cache. Default is `None` (disabled). Requires full-parameter GRPO, `use_vllm`, `vllm_mode=colocate` and `offload_model`. See [rollout memory controls](Rollout-memory.md).
+- reference_model_cache_allow_nfs: Explicitly allow NFS for the reference cache. Default is `False`; enabling it requires a cache directory. Shared storage capacity and I/O remain the operator's responsibility.
+- release_model_cpu_cache: Release redundant policy CPU parameter buffers after their device copies finish during model restoration. Default is `False`. Requires full-parameter GRPO with model offloading; does not change optimizer or checkpoint contents. See [rollout memory controls](Rollout-memory.md).
 - mcore_ref_model: Same meaning as in DPO.
 - mcore_ref_adapter: Same meaning as in DPO.
 - beta: KL regularization coefficient, default is 0.04. When set to 0, the ref model is not loaded.
