@@ -369,6 +369,8 @@ CUDA_VISIBLE_DEVICES=0 swift rlhf \
 
 ### Megatron-SWIFT
 
+可选的 GRPO [rollout 内存控制](docs/source/Megatron-SWIFT/Rollout-memory.md)支持冻结参考模型磁盘缓存，以及释放恢复后的策略模型 CPU 副本。
+
 ms-swift支持使用Megatron并行技术加速训练，包括大规模集群训练和MoE模型训练。以下为支持的训练方法：
 
 | 方法   | 全参数 | LoRA | MoE | 多模态 | FP8 |

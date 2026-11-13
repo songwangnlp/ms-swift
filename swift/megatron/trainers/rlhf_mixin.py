@@ -9,7 +9,8 @@ from swift.megatron.utils import load_mcore_checkpoint
 from swift.rlhf_trainers.utils import identity_data_collator
 from swift.utils import get_current_device, get_logger, safe_snapshot_download
 from .base import BaseMegatronTrainer
-from .utils import compute_per_token_logps_fn, reconstruct_tensor_cp
+from .utils import (compute_per_token_logps_fn, load_megatron_model_to_gpu, offload_megatron_model_to_cpu,
+                    reconstruct_tensor_cp)
 
 logger = get_logger()
 
@@ -27,8 +28,13 @@ class MegatronRLHFTrainer(BaseMegatronTrainer):
     def prepare_model(self):
         super().prepare_model()
         args = self.args
+        cache_enabled = getattr(args, 'reference_model_cache_dir', None) is not None
+        if cache_enabled:
+            from .reference_cache import validate_reference_cache_args
+            validate_reference_cache_args(args)
         self.ref_models = []
-        if args.tuner_type == 'full' and args.rlhf_type not in ['rm', 'gkd']:
+        skip_unused_reference = cache_enabled and args.beta == 0
+        if args.tuner_type == 'full' and args.rlhf_type not in ['rm', 'gkd'] and not skip_unused_reference:
             self.ref_models = get_mcore_model(args, self.template.config)
         for ref_model in self.ref_models:
             if not args.use_cpu_initialization:
@@ -43,6 +49,67 @@ class MegatronRLHFTrainer(BaseMegatronTrainer):
             assert len(args.ref_adapters) == 1, 'Currently only support one adapter.'
             self.bridge.load_weights(
                 self.unwrapped_models, args.ref_adapters[0], peft_format=True, adapter_name='ref_adapter')
+
+    def _offload_reference_model(self):
+        """Use disk backing only for this trainer's explicitly enabled reference."""
+        if getattr(self.args, 'reference_model_cache_dir', None) is None:
+            if self.ref_models:
+                return offload_megatron_model_to_cpu(self.ref_models)
+            return
+        from .reference_cache import (ReferenceFileCache, reference_cache_local_world_size, reject_reference_aliases,
+                                      require, validate_reference_cache_args)
+        validate_reference_cache_args(self.args)
+        if self.args.beta == 0:
+            require(type(self.ref_models) is list and not self.ref_models, 'kl_free_reference_contract')
+            return
+        require(bool(self.ref_models), 'missing_reference_models')
+        others = list(self.unwrapped_models) + list(getattr(self, 'teacher_models', None) or [])
+        reject_reference_aliases(self.ref_models, others)
+        cache = getattr(self, '_reference_file_cache', None)
+        if cache is None:
+            # Native _load_checkpoint runs after prepare_model. Capture immutable
+            # versions only now, after all reference weights have been loaded.
+            import torch
+            distributed = torch.distributed.is_initialized()
+            world_size = torch.distributed.get_world_size() if distributed else 1
+            local_world_size = reference_cache_local_world_size(self.args, world_size)
+            cache = ReferenceFileCache(
+                self.ref_models,
+                self.args.reference_model_cache_dir,
+                rank=torch.distributed.get_rank() if distributed else 0,
+                world_size=world_size,
+                local_world_size=local_world_size,
+                allow_nfs=getattr(self.args, 'reference_model_cache_allow_nfs', False))
+            self._reference_file_cache = cache
+        require(cache.models is self.ref_models, 'reference_list_changed')
+        if not cache.ready:
+            cache.prepare()
+        cache.offload()
+        # Already-CPU tensors use the native no-copy cleanup path.
+        return offload_megatron_model_to_cpu(self.ref_models)
+
+    def _restore_reference_model(self):
+        if getattr(self.args, 'reference_model_cache_dir', None) is None:
+            if self.ref_models:
+                return load_megatron_model_to_gpu(self.ref_models)
+            return
+        from .reference_cache import reject_reference_aliases, require, validate_reference_cache_args
+        validate_reference_cache_args(self.args)
+        if self.args.beta == 0:
+            require(type(self.ref_models) is list and not self.ref_models, 'kl_free_reference_contract')
+            return
+        cache = getattr(self, '_reference_file_cache', None)
+        require(cache is not None and cache.models is self.ref_models and cache.ready, 'reference_cache_not_ready')
+        others = list(self.unwrapped_models) + list(getattr(self, 'teacher_models', None) or [])
+        reject_reference_aliases(self.ref_models, others)
+        result = load_megatron_model_to_gpu(self.ref_models)
+        reject_reference_aliases(self.ref_models, others)
+        import torch
+        for device in sorted({str(p.device) for _, p in cache.parameters}):
+            if device.startswith('cuda'):
+                torch.cuda.synchronize(torch.device(device))
+        cache.after_restore(copies_completed=True)
+        return result
 
     def _get_data_collator(self):
         if self.args.rlhf_type in ('grpo', 'gkd'):

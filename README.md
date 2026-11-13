@@ -381,6 +381,8 @@ CUDA_VISIBLE_DEVICES=0 swift rlhf \
 
 ### Megatron-SWIFT
 
+Optional GRPO [rollout memory controls](docs/source_en/Megatron-SWIFT/Rollout-memory.md) cover frozen-reference disk caching and releasing restored policy CPU copies.
+
 ms-swift supports using Megatron parallelism techniques to accelerate training, including large-scale cluster training and MoE model training. The following training methods are supported:
 
 | Method                 | Full-Parameter | LoRA | MoE  | Multimodal | FP8  |
